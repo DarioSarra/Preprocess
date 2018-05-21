@@ -1,33 +1,25 @@
-module Taccuino
+module Preprocess
 
 using Reexport
 @reexport using Reexport
 @reexport using DataFrames
-@reexport using DataArrays
 @reexport using MAT
 @reexport using CSV
 @reexport using Dates
-
+@reexport using CSV
+@reexport using FileIO
+@reexport using CSVFiles
+@reexport using GLM
+@reexport using TextParse
+@reexport using ShiftedArrays
+@reexport using IterableTables
+@reexport using JLD2
+using StaticArrays
 export get_data, createfilelist, paths_dataframe, convert2Bool, convert2Int, get_sessionname,
-get_CAMmousedate, get_BHVmousedate, get_Protocollo, get_streak, get_streakstart, get_sequence,
-get_correct, preprocess, create_pokes_single_session, create_pokes_dataframe, create_streak_dataframe,
-check_fiberlocation, gen, get_last, get_shifteddifference, get_FromStim
-
-
-"""
-`createfilelist`
-use get_data function to obtain all filenames of behaviour
-"""
-function createfilelist(Directory_path::String, Mice_suffix::String)
-    bhv = get_data(Directory_path,:bhv)
-    #use get_sessionname to select relevant session (for instance use exp naming code)
-    bhv_session = map(t->get_sessionname(t,Mice_suffix),bhv)#to be changed for each dataframe
-    # get_sessionname return a start result for sessions that don't match the criteria this can be used to prune irrelevant paths
-    bhv = bhv[bhv_session.!="start"]
-    bhv_session = bhv_session[bhv_session.!="start"]
-    return bhv
-end
-
+get_session, get_CAMmousedate, get_BHVmousedate, get_Protocollo, get_streak, get_streakstart,
+get_sequence, get_correct, preprocess, create_pokes_single_session, create_pokes_dataframe,
+create_streak_dataframe, check_fiberlocation, gen, get_last, get_shifteddifference, get_FromStim,
+concat_data!, concat_data
 """
 `get_data`
 
@@ -84,6 +76,7 @@ function get_sessionname(filepath, what::String)
     return sessionname
 end
 
+
 # the second method allows to save experiment related character pattern in a dictionary
 function get_sessionname(filepath, kind::Symbol)
     #the dictionary refers the symbol in the input to a specific string to look for
@@ -94,6 +87,41 @@ function get_sessionname(filepath, kind::Symbol)
     #once the string is identified the function call itself again with the first method
     return get_sessionname(filepath, ext_dict[kind])
 end
+
+"""
+`get_session`
+Generalise version
+"""
+function get_session(filepath,what::String)
+    a = get_sessionname(filepath,what)
+    b = match(r"[a-zA-Z]{2}\d+",a)
+    c = b.match
+    if ismatch(r"\d{8}",a)
+        d = match(r"\d{8}",a)
+        e = d.match
+        e = e[3:8]
+    else
+        d = match(r"\d{6}",a)
+        e = c.match
+    end
+    sessione = c*"_"*e
+    return sessione
+end
+
+"""
+`createfilelist`
+use get_data function to obtain all filenames of behaviour
+"""
+function createfilelist(Directory_path::String, Mice_suffix::String)
+    bhv = get_data(Directory_path,:bhv)
+    #use get_sessionname to select relevant session (for instance use exp naming code)
+    bhv_session = map(t->get_sessionname(t,Mice_suffix),bhv)#to be changed for each dataframe
+    # get_sessionname return a start result for sessions that don't match the criteria this can be used to prune irrelevant paths
+    bhv = bhv[bhv_session.!="start"]
+    bhv_session = bhv_session[bhv_session.!="start"]
+    return bhv
+end
+
 
 """
 `paths_dataframe`
@@ -187,7 +215,7 @@ function get_Protocollo(df)
             push!(ProtName,curr_prot)
         end
     end
-    df[:Protocol] = pool(ProtName)
+    df[:Protocol] = categorical(ProtName)
 end
 """
 `get_streak(df)`
@@ -336,8 +364,8 @@ from the python csv file combining the previous function
 """
 
 function preprocess(bhv_files)
-    curr_data=CSV.read(bhv_files,nullable = false)
-    rename!(curr_data, Symbol(""), :Poke_n) #change poke counter name
+    curr_data=CSV.read(bhv_files, allowmissing=:none)
+    rename!(curr_data, Symbol("") => :Poke_n) #change poke counter name
     curr_data[:Poke_n]= curr_data[:Poke_n]+1
     booleans=[:Reward,:Side,:SideHigh,:Stim] #columns to convert to Bool
     integers=[:Protocollo,:ProbVec0,:ProbVec1,:GamVec0,:GamVec1,:delta] #columns to convert to Int64
@@ -353,7 +381,7 @@ function preprocess(bhv_files)
         genotype = gen.(curr_data[:MouseID])
         curr_data[:Gen]= genotype
     catch
-        println("Missing genotype info ", session)
+        println("Missing genotype info ", session," ",curr_data[:MouseID],)
     end
     get_Protocollo(curr_data)#create a columns with a unique string to distinguish protocols
     curr_data[:Streak_n] = get_sequence(curr_data,:Side)
@@ -369,7 +397,7 @@ function preprocess(bhv_files)
     curr_data[:BlockCount] = get_sequence(curr_data,:Streak_n,:Block,:Correct)
     curr_data[:ReverseStreak_n] = reverse(curr_data[:Streak_n])
     curr_data[:LastBlock] = get_last(curr_data,:Block)
-    curr_data[:InterPoke] = get_shifteddifference(curr_data,:PokeIn,:PokeOut,:StreakStart)
+    curr_data[:InterPoke] = get_shifteddifference(curr_data,:PokeIn,:PokeOut)
     for x in[:ProbVec0,:ProbVec1,:GamVec0,:GamVec1,:Protocollo]
         delete!(curr_data, x)
     end
@@ -384,8 +412,8 @@ look for a dataset where fiberlocation across day is stored
 function check_fiberlocation(data,Exp_name)
     filetofind=joinpath("/Users/dariosarra/Google Drive/Flipping/run_task_photo/"*Exp_name*"/FiberLocation"*".csv");
     if isfile(filetofind)
-        fiberlocation = readtable(filetofind);
-        pokes_table = join(data, fiberlocation, on = :Session, kind = :inner);
+        fiberlocation = CSV.read(filetofind);
+        pokes_table = join(data, fiberlocation, on = :Session, kind = :inner,makeunique=true);
         println("found fibres location file, HAVE YOU UPDATED IT?")
     else
         println("no fibres location file")
@@ -403,7 +431,7 @@ function gen(str; dir = joinpath(dirname(@__DIR__), "genotypes"))
     genotype = "missing"
     for file in readdir(dir)
         if endswith(file, ".csv")
-            df = readtable(joinpath(dir, file))
+            df = CSV.read(joinpath(dir, file))
             n = names(df)[1]
             if str in df[n]
                 genotype = string(n)
@@ -431,7 +459,7 @@ function create_pokes_single_session(behavior::DataFrame, Exp_name::String)
         push!(Preprocessed_path,filetosave)
         if ~isfile(filetosave)
             data,bho = preprocess(path)
-            writetable(filetosave,data)
+            CSV.write(filetosave,data)
             b=b+1
         else
             c=c+1
@@ -441,26 +469,34 @@ function create_pokes_single_session(behavior::DataFrame, Exp_name::String)
     behavior[:Preprocessed_Path] = Preprocessed_path;
     return behavior
 end
+"""
+`concat_data!`
+Adjust append in case Dataframes have different columns order
+"""
+concat_data!(a, b) = append!(a, b[:, names(a)])
+
+"""
+`concat_data`
+Append a series of dataframe if receives an arrays of paths
+"""
+
+function concat_data(v)
+    a = CSV.read(v[1])
+    #a = FileIO.load(v[1])|> DataFrame;
+    for n in v[2:end]
+        concat_data!(a, CSV.read(n))
+    end
+    a
+end
 
 """
 `create_pokes_dataframe`
 join all the preprocessed pokes dataframe in a single dataframe
 """
 function create_pokes_dataframe(behavior::DataFrame,Exp_type::String,Exp_name::String)
-    case = 0;
-    data = DataFrame()
-    for i in behavior[:Preprocessed_Path]
-        if case == 0;
-            data = readtable(i);
-            case = 1;
-        elseif case ==1;
-            x = readtable(i);
-            append!(data,x);
-        end
-    end
-    #### save the pokes dataframe
+    data = concat_data(behavior[:Preprocessed_Path])
     filetosave = "/Users/dariosarra/Google Drive/Flipping/Datasets/"*Exp_type*"/"*Exp_name*"/pokes"*Exp_name*".csv"
-    writetable(filetosave,data)
+    CSV.write(filetosave,data)
     return data
 end
 
@@ -477,12 +513,14 @@ function create_streak_dataframe(data::DataFrame,Exp_type::String,Exp_name::Stri
         Num_pokes = size(df,1),
         Num_Rewards = length(find(df[:Reward].==1)),
         Last_Reward = findlast(df[:Reward] .==1),
+        Prev_Reward = findprev(df[:Reward] .==1, findlast(df[:Reward] .==1)-1),
         Trial_duration = (df[:PokeOut][end]-df[:PokeIn][1]),
         Start = (df[1,:PokeIn]),
         Stop = (df[end,:PokeOut]),
         Session2 = df[1,:MouseID]*"_"*string(df[:Day][1]),
         Session = df[1,:Session],
         InterPoke = maximum(df[:InterPoke]),
+        PokeSequence = [SVector{size(df,1),Bool}(df[:Reward])]
         )
         for s in columns_list
             if s in names(df)
@@ -492,27 +530,22 @@ function create_streak_dataframe(data::DataFrame,Exp_type::String,Exp_name::Stri
         return dd
     end
     streak_table[:AfterLast] = streak_table[:Num_pokes] - streak_table[:Last_Reward];
+    streak_table[:BeforeLast] = streak_table[:Last_Reward] - streak_table[:Prev_Reward]-1;
     sort!(streak_table, cols = [order(:Session), order(:Streak_n)])
-
-
-
     #travel duration
-    streak_table[:Travel_duration] = Array{Float64}(size(streak_table,1));
-    a= streak_table[:Start][2:end] - streak_table[:Stop][1:end-1];
-    streak_table[1:end-1,:Travel_duration] = (streak_table[:Stop][2:end] - streak_table[:Start][1:end-1]);
-    streak_table[end,:Travel_duration] = 0;
-    idx =  find(streak_table[:Streak_n].==1);#find the first streak of a session
-    idx = idx.-1;#find the index of the last trial of a session
-    shift!(idx); #remove first element of an array because the first session doesn't have a last trial before it
-    streak_table[idx,:Travel_duration]=0#set the travel duration of the last trial to 0
-    #refinements
+    streak_table[:Travel_duration] = 0.0
+    by(streak_table,:Session) do dd
+        a = dd[:Start][2:end] - dd[:Stop][1:end-1];
+        dd[1:end-1,:Travel_duration] = a;
+    end
     delete!(streak_table, [:Start,:Stop])
     if streak_table[:Session] == streak_table[:Session2]
         delete!(streak_table, :Session2)
     end
     #### Save streaktable
     filetosave = "/Users/dariosarra/Google Drive/Flipping/Datasets/"*Exp_type*"/"*Exp_name*"/streaks"*Exp_name*".csv"
-    writetable(filetosave,streak_table)
+    CSV.write(filetosave,streak_table)
+    @save "/Users/dariosarra/Google Drive/Flipping/Datasets/"*Exp_type*"/"*Exp_name*"/streaks"*Exp_name*".jld2" streak_table
     return streak_table
 end
 

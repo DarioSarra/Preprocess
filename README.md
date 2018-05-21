@@ -1,3 +1,3 @@
-# Bench for writing new modules
+# Flipping Task Preprocessing
 
-Repository to back up modules version during work in progress
+Repository to obtain table with behavioural data from raw aruino output
